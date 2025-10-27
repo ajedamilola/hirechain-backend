@@ -6,16 +6,15 @@ import {
     AccountId,
     TopicMessageSubmitTransaction,
     TopicId,
-    Transaction,
     ContractCreateTransaction,
     ContractExecuteTransaction,
     ContractFunctionParameters,
-    TransactionId,
     ContractCreateFlow
 } from "@hashgraph/sdk";
 import express from "express";
 import * as dotenv from "dotenv";
 import axios from "axios";
+import { v4 as uuidv4 } from 'uuid'; // For generating unique gig IDs
 import fs from "fs";
 import solc from "solc";
 
@@ -24,219 +23,358 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Load credentials and configuration from .env file
 const myAccountId = process.env.TREASURY_ACCOUNT_ID;
 const myPrivateKey = process.env.TREASURY_PRIVATE_KEY;
 const profileTopicId = process.env.HIRECHAIN_PROFILE_TOPIC_ID;
 const gigsTopicId = process.env.HIRECHAIN_GIGS_TOPIC_ID;
+const messagesTopicId = process.env.HIRECHAIN_MESSAGES_TOPIC_ID; // NEW: Messages Topic ID
 
-if (!myAccountId || !myPrivateKey || !profileTopicId || !gigsTopicId) {
-    throw new Error("All environment variables must be present");
+if (!myAccountId || !myPrivateKey || !profileTopicId || !gigsTopicId || !messagesTopicId) {
+    throw new Error("All required environment variables must be present");
 }
 
-// Create a client for the backend to use for submitting transactions and paying for account creation
-const client = Client.forTestnet();
-client.setOperator(AccountId.fromString(myAccountId), PrivateKey.fromStringECDSA(myPrivateKey));
+// Main client for platform-paid transactions (like creating accounts)
+const platformClient = Client.forTestnet();
+platformClient.setOperator(AccountId.fromString(myAccountId), PrivateKey.fromStringECDSAECDSA(myPrivateKey));
 
-// Compile the escrow smart contract to have its bytecode ready
+// Compile the escrow smart contract
 const contractSource = fs.readFileSync("Escrow.sol", "utf8");
-const input = {
-    language: "Solidity",
-    sources: { "Escrow.sol": { content: contractSource } },
-    settings: { outputSelection: { "*": { "*": ["*"] } } },
-};
+const input = { language: "Solidity", sources: { "Escrow.sol": { content: contractSource } }, settings: { outputSelection: { "*": { "*": ["*"] } } } };
 const output = JSON.parse(solc.compile(JSON.stringify(input)));
 const bytecode = output.contracts["Escrow.sol"]["HireChainEscrow"].evm.bytecode.object;
 
+// --- In-Memory "Database" (for demonstration purposes only) ---
+// In a real application, this would be a persistent database (PostgreSQL, MongoDB etc.)
+const gigsDB = {};     // Stores gigRefId -> { gigData, hcsSequenceNumber, escrowContractId?, assignedFreelancerId? }
+const profilesDB = {};  // Stores accountId -> { profileData } (for quick lookups)
+const messagesDB = {};  // Stores gigRefId -> [message objects]
 
-// --- 2. THE GENERIC SUBMISSION ENDPOINT ---
-// This is the cornerstone of the wallet-centric model. All signed transactions come here.
-app.post("/transactions/submit", async (req, res) => {
+// --- Helper for fetching from Mirror Node ---
+const MIRROR_NODE_URL = `https://testnet.mirrornode.hedera.com/api/v1`;
+
+
+// --- 2. USER MANAGEMENT ---
+app.post("/register", async (req, res) => {
     try {
-        const { signedTxBase64 } = req.body;
-        if (!signedTxBase64) {
-            return res.status(400).json({ message: "Signed transaction is required." });
-        }
+        const { name, skills, portfolioUrl } = req.body;
+        if (!name || !skills) return res.status(400).json({ message: "Name and skills are required." });
 
-        const signedTxBytes = Buffer.from(signedTxBase64, "base64");
-        const signedTransaction = Transaction.fromBytes(signedTxBytes);
-
-        const txResponse = await signedTransaction.execute(client);
-        const receipt = await txResponse.getReceipt(client);
-
-        res.status(200).json({
-            message: "Transaction submitted successfully!",
-            receipt: receipt
-        });
-    } catch (error) {
-        console.error("Submission Error:", error);
-        res.status(500).json({ message: "Error submitting transaction", error: error.toString() });
-    }
-});
-
-
-// --- 3. USER ONBOARDING ---
-// The platform pays to create the user's first account. This is the ONLY action
-// that doesn't require a signature from the user's wallet.
-app.post("/users/create-account", async (req, res) => {
-    try {
-        const newAccountPrivateKey = PrivateKey.generateECDSA();
+        // Step 1: Create the Hedera Account (paid by the platform)
+        const newAccountPrivateKey = PrivateKey.generateED25519();
         const newAccountPublicKey = newAccountPrivateKey.publicKey;
-
-        const newAccountTx = await new AccountCreateTransaction()
-            .setKeyWithoutAlias(newAccountPublicKey)
-            .setInitialBalance(new Hbar(10)) // Sponsor user with 10 HBAR
-            .execute(client);
-
-        const receipt = await newAccountTx.getReceipt(client);
+        const newAccountTx = await new AccountCreateTransaction().setKey(newAccountPublicKey).setInitialBalance(new Hbar(10)).execute(platformClient);
+        const receipt = await newAccountTx.getReceipt(platformClient);
         const newAccountId = receipt.accountId;
 
-        // In a real app, you would NOT send the private key. You'd instruct the user
-        // to import it into their wallet. For this example, we return it.
+        // Step 2: Create the On-Chain Profile (paid by the new user's account)
+        const profileData = { type: "PROFILE_CREATE", userAccountId: newAccountId.toString(), name, skills, portfolioUrl };
+        const profileTx = new TopicMessageSubmitTransaction({ topicId: profileTopicId, message: JSON.stringify(profileData) });
+
+        const userClient = Client.forTestnet();
+        userClient.setOperator(newAccountId, newAccountPrivateKey);
+        const signedProfileTx = await profileTx.sign(newAccountPrivateKey);
+        await signedProfileTx.execute(userClient);
+
+        // Store profile in in-memory DB for quick access
+        profilesDB[newAccountId.toString()] = profileData;
+
         res.status(201).json({
+            message: "User registered successfully!",
             accountId: newAccountId.toString(),
-            publicKey: newAccountPublicKey.toStringRaw(),
-            privateKey: newAccountPrivateKey.toStringRaw(),
+            privateKey: newAccountPrivateKey.toStringRaw(), // Send back to user to store
+            profile: profileData
         });
     } catch (error) {
-        res.status(500).json({ message: "Error creating account", error: error.toString() });
+        res.status(500).json({ message: "Registration failed", error: error.toString() });
     }
 });
 
-// Endpoint to PREPARE a transaction for creating a user's on-chain profile
-app.post("/users/prepare-profile-creation", async (req, res) => {
+// Get user profile (NEW)
+app.get("/users/profile/:accountId", async (req, res) => {
     try {
-        const { userAccountId, name, skills, portfolioUrl } = req.body;
+        const accountId = req.params.accountId;
+        // Check in-memory DB first (faster)
+        if (profilesDB[accountId]) {
+            return res.status(200).json(profilesDB[accountId]);
+        }
 
-        const profileData = {
-            type: "PROFILE_CREATE",
-            userAccountId,
-            name,
-            skills,
-            portfolioUrl,
-            timestamp: new Date().toISOString()
+        // Fallback to Mirror Node if not in local cache (and update cache)
+        const mirrorNodeUrl = `${MIRROR_NODE_URL}/topics/${profileTopicId}/messages`;
+        const response = await axios.get(mirrorNodeUrl);
+        const messages = response.data.messages;
+
+        let userProfile = null;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const messageString = Buffer.from(messages[i].message, "base64").toString("utf-8");
+            try {
+                const messageJson = JSON.parse(messageString);
+                if (messageJson.type === "PROFILE_CREATE" && messageJson.userAccountId === accountId) {
+                    userProfile = messageJson;
+                    profilesDB[accountId] = userProfile; // Cache it
+                    break;
+                }
+            } catch (e) { /* ignore parse errors */ }
+        }
+
+        if (userProfile) {
+            res.status(200).json(userProfile);
+        } else {
+            res.status(404).json({ message: "Profile not found for this account." });
+        }
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching profile", error: error.toString() });
+    }
+});
+
+
+// --- 3. GIG MANAGEMENT ---
+app.post("/gigs", async (req, res) => {
+    try {
+        const { clientId, clientPrivateKey, title, description, budget } = req.body;
+        if (!clientId || !clientPrivateKey || !title || !description || !budget) return res.status(400).json({ message: "Missing required gig fields." });
+
+        const gigRefId = uuidv4(); // Generate a unique ID for this gig
+        const gigData = { type: "GIG_CREATE", gigRefId, clientId, title, description, budget: `${budget} HBAR`, status: "OPEN" };
+        const transaction = new TopicMessageSubmitTransaction({ topicId: gigsTopicId, message: JSON.stringify(gigData) });
+
+        const userClient = Client.forTestnet().setOperator(clientId, clientPrivateKey);
+        const signedTx = await transaction.sign(PrivateKey.fromStringECDSA(clientPrivateKey));
+        const txResponse = await signedTx.execute(userClient);
+        const receipt = await txResponse.getReceipt(userClient);
+
+        // Store gig in our in-memory DB (keyed by gigRefId)
+        gigsDB[gigRefId] = {
+            ...gigData,
+            hcsSequenceNumber: receipt.topicSequenceNumber.toString(),
+            escrowContractId: null, // Initially no escrow
+            assignedFreelancerId: null, // Initially no freelancer
         };
 
-        const transaction = new TopicMessageSubmitTransaction({
-            topicId: TopicId.fromString(profileTopicId),
-            message: JSON.stringify(profileData),
-            transactionId: TransactionId.generate(userAccountId) // User will pay
-        });
-
-        const frozenTx = await transaction.freezeWith(client);
-        const base64Tx = Buffer.from(frozenTx.toBytes()).toString("base64");
-
-        res.status(200).json({ unsignedTxBase64: base64Tx });
+        res.status(201).json({ message: "Gig created successfully.", gigRefId, receipt });
     } catch (error) {
-        res.status(500).json({ message: "Error preparing transaction", error: error.toString() });
+        res.status(500).json({ message: "Error creating gig", error: error.toString() });
     }
 });
 
-
-// --- 4. GIG MANAGEMENT ---
-// Endpoint to PREPARE a transaction for creating a gig on HCS
-app.post("/gigs/prepare-creation", async (req, res) => {
+// Endpoint to assign a freelancer and create/initialize the escrow (NEW)
+app.post("/gigs/:gigRefId/assign", async (req, res) => {
     try {
-        const { clientId, title, description, budget } = req.body;
+        const { gigRefId } = req.params;
+        const { clientId, clientPrivateKey, freelancerAccountId } = req.body;
 
-        const gigData = {
-            type: "GIG_CREATE",
-            clientId,
-            title,
-            description,
-            budget: `${budget} HBAR`,
-            status: "OPEN",
-            timestamp: new Date().toISOString()
-        };
+        if (!clientId || !clientPrivateKey || !freelancerAccountId) return res.status(400).json({ message: "Missing client/freelancer details." });
+        if (!gigsDB[gigRefId]) return res.status(404).json({ message: "Gig not found." });
+        if (gigsDB[gigRefId].clientId !== clientId) return res.status(403).json({ message: "Only the gig owner can assign a freelancer." });
+        if (gigsDB[gigRefId].status !== "OPEN") return res.status(400).json({ message: "Gig is not open for assignment." });
 
-        const transaction = new TopicMessageSubmitTransaction({
-            topicId: TopicId.fromString(gigsTopicId),
-            message: JSON.stringify(gigData),
-            transactionId: TransactionId.generate(clientId) // Client will pay
-        });
+        const userClient = Client.forTestnet().setOperator(clientId, clientPrivateKey);
 
-        const frozenTx = await transaction.freezeWith(client);
-        const base64Tx = Buffer.from(frozenTx.toBytes()).toString("base64");
-
-        res.status(200).json({ unsignedTxBase64: base64Tx });
-    } catch (error) {
-        res.status(500).json({ message: "Error preparing transaction", error: error.toString() });
-    }
-});
-
-// Endpoint to list all gigs (does not require a transaction)
-app.get("/gigs", async (req, res) => { /* ... same as before ... */ });
-
-
-// --- 5. ESCROW MANAGEMENT (TIED TO GIGS) ---
-// NOTE: For a real app, you would use a database to link a gig's sequence number
-// (from its HCS receipt) to the `escrowContractId` created for it.
-
-// Endpoint to PREPARE the creation and initialization of an escrow contract for a gig
-app.post("/escrow/prepare-creation", async (req, res) => {
-    try {
-        const { clientId, freelancerAccountId } = req.body;
-
-        // This transaction is complex: it creates AND initializes the contract.
-        // It's still paid for and signed by the client.
-        const transaction = new ContractCreateFlow()
+        // 1. Create and initialize the Escrow Contract
+        const contractCreateTx = new ContractCreateFlow()
             .setBytecode(bytecode)
+            .setGas(100000); // Only deploys the contract logic
+
+        const createResponse = await contractCreateTx.execute(userClient);
+        const createReceipt = await createResponse.getReceipt(userClient);
+        const newContractId = createReceipt.contractId;
+
+        // Call initEscrow to set client and freelancer
+        const initEscrowTx = new ContractExecuteTransaction()
+            .setContractId(newContractId)
             .setGas(100000)
-            .setConstructorParameters(
-                new ContractFunctionParameters().addAddress(AccountId.fromString(freelancerAccountId).toEvmAddress())
-            )
-            .setTransactionId(TransactionId.generate(clientId));
+            .setFunction("initEscrow", new ContractFunctionParameters().addAddress(AccountId.fromString(freelancerAccountId).toEvmAddress()));
 
-        const frozenTx = await transaction.freezeWith(client);
-        const base64Tx = Buffer.from(frozenTx.toBytes()).toString("base64");
+        await initEscrowTx.execute(userClient).getReceipt(userClient);
 
-        res.status(200).json({ unsignedTxBase64: base64Tx });
+        // 2. Update Gig Status on HCS to "IN_PROGRESS" and link escrow
+        const updateGigData = {
+            type: "GIG_UPDATE",
+            gigRefId,
+            clientId,
+            status: "IN_PROGRESS",
+            assignedFreelancerId: freelancerAccountId,
+            escrowContractId: newContractId.toString(),
+            timestamp: new Date().toISOString()
+        };
+        const updateGigTx = new TopicMessageSubmitTransaction({ topicId: gigsTopicId, message: JSON.stringify(updateGigData) });
+        await updateGigTx.execute(userClient).getReceipt(userClient);
+
+        // 3. Update in-memory DB
+        gigsDB[gigRefId].status = "IN_PROGRESS";
+        gigsDB[gigRefId].assignedFreelancerId = freelancerAccountId;
+        gigsDB[gigRefId].escrowContractId = newContractId.toString();
+
+        res.status(200).json({
+            message: "Freelancer assigned and escrow created successfully.",
+            gigRefId,
+            escrowContractId: newContractId.toString(),
+        });
+
     } catch (error) {
-        res.status(500).json({ message: "Error preparing escrow creation", error: error.toString() });
+        res.status(500).json({ message: "Error assigning freelancer/creating escrow", error: error.toString() });
     }
 });
 
-// Endpoint to PREPARE locking funds in escrow
-app.post("/escrow/prepare-lock", async (req, res) => {
+// Endpoint to list all gigs (retrieves from in-memory DB first, then mirror node for updates)
+app.get("/gigs", async (req, res) => {
     try {
-        const { clientId, contractId, amount } = req.body;
+        const gigs = Object.values(gigsDB); // Get all gigs from our in-memory DB
+        // In a real app, you'd also query the mirror node for the latest state of ALL gigs
+        // and update your DB. For this example, we'll return what we have in memory.
+        res.status(200).json(gigs);
+    } catch (error) {
+        res.status(500).json({ message: "Error listing gigs", error: error.toString() });
+    }
+});
+
+// Get a single gig by gigRefId (NEW)
+app.get("/gigs/:gigRefId", async (req, res) => {
+    const { gigRefId } = req.params;
+    if (gigsDB[gigRefId]) {
+        return res.status(200).json(gigsDB[gigRefId]);
+    }
+    // In a real app, you'd try to fetch all messages for gigsTopicId and reconstruct the latest state for this gig.
+    res.status(404).json({ message: "Gig not found." });
+});
+
+
+// --- 4. ESCROW MANAGEMENT (Now takes gigRefId, looks up contractId from DB) ---
+app.post("/gigs/:gigRefId/lock-escrow", async (req, res) => {
+    try {
+        const { gigRefId } = req.params;
+        const { clientId, clientPrivateKey, amount } = req.body;
+        if (!clientId || !clientPrivateKey || !amount) return res.status(400).json({ message: "Missing required fields." });
+
+        const gig = gigsDB[gigRefId];
+        if (!gig || !gig.escrowContractId) return res.status(404).json({ message: "Gig not found or no escrow associated." });
+        if (gig.clientId !== clientId) return res.status(403).json({ message: "Only the gig client can lock funds." });
+        if (gig.status !== "IN_PROGRESS") return res.status(400).json({ message: "Funds can only be locked for an active gig." });
+
+        const userClient = Client.forTestnet().setOperator(clientId, clientPrivateKey);
 
         const transaction = new ContractExecuteTransaction()
-            .setContractId(contractId)
+            .setContractId(gig.escrowContractId)
             .setGas(150000)
             .setFunction("lockFunds")
-            .setPayableAmount(new Hbar(amount))
-            .setTransactionId(TransactionId.generate(clientId));
+            .setPayableAmount(new Hbar(amount));
 
-        const frozenTx = await transaction.freezeWith(client);
-        const base64Tx = Buffer.from(frozenTx.toBytes()).toString("base64");
+        const txResponse = await transaction.execute(userClient);
+        await txResponse.getReceipt(userClient);
 
-        res.status(200).json({ unsignedTxBase64: base64Tx });
+        res.status(200).json({ message: `Successfully locked ${amount} HBAR for gig ${gigRefId}.` });
     } catch (error) {
-        res.status(500).json({ message: "Error preparing lock transaction", error: error.toString() });
+        res.status(500).json({ message: "Error locking funds", error: error.toString() });
     }
 });
 
-// Endpoint to PREPARE releasing funds from escrow
-app.post("/escrow/prepare-release", async (req, res) => {
+app.post("/gigs/:gigRefId/release-escrow", async (req, res) => {
     try {
-        const { clientId, contractId } = req.body;
+        const { gigRefId } = req.params;
+        const { clientId, clientPrivateKey } = req.body;
+        if (!clientId || !clientPrivateKey) return res.status(400).json({ message: "Missing required fields." });
+
+        const gig = gigsDB[gigRefId];
+        if (!gig || !gig.escrowContractId) return res.status(404).json({ message: "Gig not found or no escrow associated." });
+        if (gig.clientId !== clientId) return res.status(403).json({ message: "Only the gig client can release funds." });
+
+        const userClient = Client.forTestnet().setOperator(clientId, clientPrivateKey);
 
         const transaction = new ContractExecuteTransaction()
-            .setContractId(contractId)
+            .setContractId(gig.escrowContractId)
             .setGas(150000)
-            .setFunction("releaseFunds")
-            .setTransactionId(TransactionId.generate(clientId));
+            .setFunction("releaseFunds");
 
-        const frozenTx = await transaction.freezeWith(client);
-        const base64Tx = Buffer.from(frozenTx.toBytes()).toString("base64");
+        const txResponse = await transaction.execute(userClient);
+        await txResponse.getReceipt(userClient);
 
-        res.status(200).json({ unsignedTxBase64: base64Tx });
+        // Update gig status (optional, but good practice)
+        gigsDB[gigRefId].status = "COMPLETED"; // Update in-memory DB
+        // In a real app, you'd also send a GIG_UPDATE message to HCS here.
+
+        res.status(200).json({ message: `Successfully released funds for gig ${gigRefId}.` });
     } catch (error) {
-        res.status(500).json({ message: "Error preparing release transaction", error: error.toString() });
+        res.status(500).json({ message: "Error releasing funds", error: error.toString() });
     }
 });
 
+
+// --- 5. GIG MESSAGING (NEW) ---
+app.post("/gigs/:gigRefId/messages", async (req, res) => {
+    try {
+        const { gigRefId } = req.params;
+        const { senderId, senderPrivateKey, content } = req.body;
+
+        if (!senderId || !senderPrivateKey || !content) return res.status(400).json({ message: "Sender ID, private key, and content are required." });
+        if (!gigsDB[gigRefId]) return res.status(404).json({ message: "Gig not found." });
+
+        const gig = gigsDB[gigRefId];
+        if (gig.clientId !== senderId && gig.assignedFreelancerId !== senderId) {
+            return res.status(403).json({ message: "Only the client or assigned freelancer can send messages for this gig." });
+        }
+
+        const messageData = {
+            type: "GIG_MESSAGE",
+            gigRefId,
+            senderId,
+            content,
+            timestamp: new Date().toISOString()
+        };
+
+        const transaction = new TopicMessageSubmitTransaction({ topicId: messagesTopicId, message: JSON.stringify(messageData) });
+
+        const userClient = Client.forTestnet().setOperator(senderId, senderPrivateKey);
+        const signedTx = await transaction.sign(PrivateKey.fromStringECDSA(senderPrivateKey));
+        const txResponse = await signedTx.execute(userClient);
+        const receipt = await txResponse.getReceipt(userClient);
+
+        // Store message in in-memory DB for faster retrieval
+        if (!messagesDB[gigRefId]) messagesDB[gigRefId] = [];
+        messagesDB[gigRefId].push(messageData);
+
+        res.status(201).json({ message: "Message sent successfully.", receipt });
+    } catch (error) {
+        res.status(500).json({ message: "Error sending message", error: error.toString() });
+    }
+});
+
+app.get("/gigs/:gigRefId/messages", async (req, res) => {
+    try {
+        const { gigRefId } = req.params;
+        if (!gigsDB[gigRefId]) return res.status(404).json({ message: "Gig not found." });
+
+        // Retrieve from in-memory DB first (faster and includes all messages sent via this backend instance)
+        if (messagesDB[gigRefId]) {
+            return res.status(200).json(messagesDB[gigRefId]);
+        }
+
+        // Fallback to Mirror Node for historical messages not in cache
+        const mirrorNodeUrl = `${MIRROR_NODE_URL}/topics/${messagesTopicId}/messages?limit=100`; // Fetch recent messages
+        const response = await axios.get(mirrorNodeUrl);
+        const messages = response.data.messages;
+
+        const gigMessages = [];
+        for (const msg of messages) {
+            const messageString = Buffer.from(msg.message, "base64").toString("utf-8");
+            try {
+                const messageJson = JSON.parse(messageString);
+                if (messageJson.type === "GIG_MESSAGE" && messageJson.gigRefId === gigRefId) {
+                    gigMessages.push(messageJson);
+                }
+            } catch (e) { /* ignore parse errors */ }
+        }
+        // Optionally, cache these fetched messages into messagesDB[gigRefId]
+        messagesDB[gigRefId] = gigMessages;
+
+        res.status(200).json(gigMessages);
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching messages", error: error.toString() });
+    }
+});
+
+
+// --- 6. ARBITER ENDPOINTS (Unchanged) ---
+
+// --- 5. ARBITER ENDPOINTS (Unchanged) ---
 
 app.post("/arbiter/release", async (req, res) => {
     try {
@@ -292,8 +430,10 @@ app.post("/arbiter/cancel", async (req, res) => {
     }
 });
 
-const port = process.env.POST || 3000
 
+
+// --- 7. START THE SERVER ---
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
-    console.log(`HireChain backend listening at http://localhost:${port}`);
+    console.log(`HireChain backend listening on port ${port}`);
 });

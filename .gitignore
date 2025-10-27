@@ -1,2 +1,5 @@
 node_modules
 .env
+messages.json
+gigs.json
+profiles.json

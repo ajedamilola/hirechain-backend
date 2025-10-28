@@ -297,8 +297,10 @@ const startServer = async () => {
     rewardsDB = loadDB(REWARDS_DB_FILE);
     console.log(`Loaded ${Object.keys(xpDB || {}).length} XP records and ${Object.keys(rewardsDB || {}).length} reward records.`);
     await initializeNftCollections();
-    const port = process.env.PORT || 3000;
-    app.listen(port, () => console.log(`HireChain backend listening on port ${port}`));
+    if (!process.env.NODE_ENV != "VERCEL") {
+        const port = process.env.PORT || 3000;
+        app.listen(port, () => console.log(`HireChain backend listening on port ${port}`));
+    }
 };
 startServer();
 

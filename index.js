@@ -12,7 +12,8 @@ import {
     TransactionId,
     ContractCreateTransaction,
     FileCreateTransaction,
-    FileAppendTransaction
+    FileAppendTransaction,
+    ContractId
 } from "@hashgraph/sdk";
 import express from "express";
 import * as dotenv from "dotenv";
@@ -549,22 +550,26 @@ app.post("/gigs/:gigRefId/prepare-lock-escrow", async (req, res) => {
         const { clientId, amount } = req.body;
         const gig = gigsDB[gigRefId];
 
+        console.log({ gig })
         const transaction = new ContractExecuteTransaction()
-            .setContractId(gig.escrowContractId)
-            .setGas(150000)
+            .setContractId(ContractId.fromString(gig.escrowContractId))
+            .setGas(1_050_000)
             .setFunction("lockFunds")
             .setPayableAmount(new Hbar(amount))
+            .setTransactionId(TransactionId.generate(clientId))
             .freezeWith(Client.forTestnet());
 
         const encodedTransaction = Buffer.from(transaction.toBytes()).toString("base64");
         res.status(200).json({ encodedTransaction });
     } catch (error) {
+        console.log(error)
         res.status(500).json({ message: "Error preparing lock transaction", error: error.toString() });
     }
 });
 
 app.post("/gigs/:gigRefId/record-lock-escrow", (req, res) => {
     // No DB state change needed from our side, but we provide the endpoint for flow consistency.
+    //TODO: Actually Do State the escrow state in the DB
     console.log(`Lock recorded for gig ${req.params.gigRefId}`);
     res.status(200).json({ message: "Lock-in successfully recorded." });
 });
@@ -576,10 +581,11 @@ app.post("/gigs/:gigRefId/prepare-release-escrow", async (req, res) => {
         const gig = gigsDB[gigRefId];
 
         const transaction = new ContractExecuteTransaction()
-            .setContractId(gig.escrowContractId)
-            .setGas(150000)
+            .setContractId(ContractId.fromString(gig.escrowContractId))
+            .setGas(1_050_000)
             .setFunction("releaseFunds")
-            .freeze();
+            .setTransactionId(TransactionId.generate(clientId))
+            .freezeWith(Client.forTestnet());
 
         const encodedTransaction = Buffer.from(transaction.toBytes()).toString("base64");
         res.status(200).json({ encodedTransaction });

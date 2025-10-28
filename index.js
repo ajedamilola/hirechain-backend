@@ -7,7 +7,8 @@ import {
     TopicMessageSubmitTransaction,
     ContractExecuteTransaction,
     ContractFunctionParameters,
-    ContractCreateFlow
+    ContractCreateFlow,
+    TokenAssociateTransaction, TokenMintTransaction, TransferTransaction
 } from "@hashgraph/sdk";
 import express from "express";
 import * as dotenv from "dotenv";
@@ -15,6 +16,7 @@ import axios from "axios";
 import { v4 as uuidv4 } from 'uuid';
 import fs from "fs";
 import solc from "solc";
+import { createNftCollection } from './nft-creator.js'; // <-- NEW IMPORT
 
 // --- 1. INITIAL SETUP & CONFIGURATION ---
 dotenv.config();
@@ -45,11 +47,15 @@ const bytecode = output.contracts["Escrow.sol"]["HireChainEscrow"].evm.bytecode.
 const PROFILE_DB_FILE = "profiles.json";
 const GIGS_DB_FILE = "gigs.json";
 const MESSAGES_DB_FILE = "messages.json";
+const XP_DB_FILE = "xp.json"; // <-- NEW
+const REWARDS_DB_FILE = "rewards.json"; // <-- NEW
 
 // --- Persistent "Database" (Initialized to be populated later) ---
 let gigsDB = {};
 let profilesDB = {};
 let messagesDB = {};
+let xpDB = {}; // <-- NEW
+let rewardsDB = {}; // <-- NEW: Stores { accountId: ["BRONZE_BADGE"], ... }
 
 // --- Helper for fetching from Mirror Node ---
 const MIRROR_NODE_URL = `https://testnet.mirrornode.hedera.com/api/v1`;
@@ -190,19 +196,90 @@ const syncFromMirrorNode = async () => {
     console.log("--- HCS Synchronization Complete ---");
 };
 
-// --- Execution Block (Before starting server) ---
+// --- **NEW** NFT and Rewards Configuration ---
+const rewardTiers = {
+    BRONZE_BADGE: {
+        xpRequired: 100,
+        tokenId: null, // Will be populated from .env or creation
+        name: "HireChain Bronze Badge",
+        symbol: "HCBF",
+        envVar: "HIRECHAIN_BRONZE_BADGE_TOKEN_ID" // Maps reward to .env variable
+    },
+    SILVER_BADGE: {
+        xpRequired: 500,
+        tokenId: null,
+        name: "HireChain Silver Badge",
+        symbol: "HCSF",
+        envVar: "HIRECHAIN_SILVER_BADGE_TOKEN_ID"
+    },
+    GOLD_BADGE: {
+        xpRequired: 2000,
+        tokenId: null,
+        name: "HireChain Gold Badge",
+        symbol: "HCGF",
+        envVar: "HIRECHAIN_GOLD_BADGE_TOKEN_ID"
+    },
+};
 
+const initializeNftCollections = async () => {
+    console.log("--- Initializing/Loading NFT Collections ---");
+    // The treasury key is the supply key for all NFTs
+    const supplyKey = PrivateKey.fromStringECDSA(myPrivateKey);
+
+    for (const key in rewardTiers) {
+        const tier = rewardTiers[key];
+        const existingTokenId = process.env[tier.envVar];
+
+        if (existingTokenId && existingTokenId.length > 0) {
+            // If the Token ID is found in the .env file, use it.
+            tier.tokenId = existingTokenId;
+            console.log(`- Loaded ${tier.name} from .env with Token ID: ${tier.tokenId}`);
+        } else {
+            // If the Token ID is NOT in the .env file, create it.
+            console.log(`- Token ID for ${tier.name} not found in .env. Creating new collection...`);
+
+            try {
+                const tokenId = await createNftCollection(platformClient, tier.name, tier.symbol, myAccountId, supplyKey);
+                tier.tokenId = tokenId;
+
+                // IMPORTANT: Instruct the user to update their .env file
+                console.warn(
+                    `\n*****************************************************************\n` +
+                    `  IMPORTANT: NFT Collection '${tier.name}' created with ID ${tokenId}.\n` +
+                    `  Add this to your .env file to avoid creating it again:\n` +
+                    `  ${tier.envVar}=${tokenId}\n` +
+                    `*****************************************************************\n`
+                );
+
+            } catch (error) {
+                console.error(`Failed to create NFT for ${tier.name}. Halting startup.`);
+                // Exit the process if creation fails, as the system can't function without the tokens.
+                process.exit(1);
+            }
+        }
+    }
+    console.log("--- NFT Collections Initialized ---");
+};
+
+/// --- Execution Block (Before starting server) ---
 const startServer = async () => {
-    // 1. Sync all data from HCS Mirror Node to local JSON files
+    // 1. Sync all data from HCS Mirror Node
     await syncFromMirrorNode();
 
-    // 2. Start Express server with the fully populated and up-to-date data
+    // 2. Load our local-only databases
+    xpDB = loadDB(XP_DB_FILE);
+    rewardsDB = loadDB(REWARDS_DB_FILE);
+    console.log(`Loaded ${Object.keys(xpDB).length} XP records and ${Object.keys(rewardsDB).length} reward records.`);
+
+    // 3. Initialize NFT Collections on Hedera
+    await initializeNftCollections();
+
+    // 4. Start Express server
     const port = process.env.PORT || 3000;
     app.listen(port, () => {
         console.log(`HireChain backend listening on port ${port}`);
     });
 };
-
 // Start the synchronization and then the server
 startServer();
 // --- 2. USER MANAGEMENT ---
@@ -466,9 +543,18 @@ app.post("/gigs/:gigRefId/release-escrow", async (req, res) => {
         const txResponse = await transaction.execute(userClient);
         await txResponse.getReceipt(userClient);
 
-        // Update gig status in persistent DB <--- **CHANGE**
+        // Update gig status
         gigsDB[gigRefId].status = "COMPLETED";
-        saveDB(GIGS_DB_FILE, gigsDB); // <-- **PERSISTENCE SAVE**
+        saveDB(GIGS_DB_FILE, gigsDB);
+
+        // --- **NEW** AWARD XP ---
+        const freelancerId = gig.assignedFreelancerId;
+        if (freelancerId) {
+            const xpToAward = 100; // Can be dynamic based on gig budget later
+            xpDB[freelancerId] = (xpDB[freelancerId] || 0) + xpToAward;
+            saveDB(XP_DB_FILE, xpDB);
+            console.log(`Awarded ${xpToAward} XP to freelancer ${freelancerId}. New total: ${xpDB[freelancerId]}`);
+        }
 
         res.status(200).json({ message: `Successfully released funds for gig ${gigRefId}.` });
     } catch (error) {
@@ -550,6 +636,76 @@ app.get("/gigs/:gigRefId/messages", async (req, res) => {
         res.status(200).json(gigMessages);
     } catch (error) {
         res.status(500).json({ message: "Error fetching messages", error: error.toString() });
+    }
+});
+
+app.post("/claim-reward", async (req, res) => {
+    try {
+        const { accountId, privateKey, rewardId } = req.body;
+        if (!accountId || !privateKey || !rewardId) {
+            return res.status(400).json({ message: "accountId, privateKey, and rewardId are required." });
+        }
+
+        const tier = rewardTiers[rewardId];
+        if (!tier) return res.status(404).json({ message: "Reward tier not found." });
+
+        // 1. Check Eligibility
+        const userXP = xpDB[accountId] || 0;
+        if (userXP < tier.xpRequired) {
+            return res.status(403).json({ message: `Not enough XP. Requires ${tier.xpRequired}, you have ${userXP}.` });
+        }
+
+        // Check if already claimed
+        if (rewardsDB[accountId] && rewardsDB[accountId].includes(rewardId)) {
+            return res.status(400).json({ message: "You have already claimed this reward." });
+        }
+
+        // 2. Associate Token (Requires freelancer's signature)
+        const userClient = Client.forTestnet().setOperator(accountId, privateKey);
+        const associateTx = await new TokenAssociateTransaction()
+            .setAccountId(accountId)
+            .setTokenIds([tier.tokenId])
+            .freezeWith(userClient);
+
+        const signedAssociateTx = await associateTx.sign(PrivateKey.fromStringECDSA(privateKey));
+        await (await signedAssociateTx.execute(userClient)).getReceipt(userClient);
+        console.log(`- User ${accountId} associated with Token ID ${tier.tokenId}`);
+
+        // 3. Mint the NFT (Platform pays and signs)
+        const mintTx = new TokenMintTransaction()
+            .setTokenId(tier.tokenId)
+            .setMetadata([Buffer.from(`ipfs://bafybeih255ap4a7bhh67pr4om62rlphxcfe6iataycs62fg5vcyv5ambb4/${rewardId}`)]) // Example IPFS CID
+            .freezeWith(platformClient);
+
+        const signedMintTx = await mintTx.sign(PrivateKey.fromStringECDSA(myPrivateKey));
+        const mintResponse = await signedMintTx.execute(platformClient);
+        const mintReceipt = await mintResponse.getReceipt(platformClient);
+        const serialNumber = mintReceipt.serials[0].low; // Get the serial number of the new NFT
+        console.log(`- Minted NFT for ${tier.name} with serial number ${serialNumber}`);
+
+        // 4. Transfer NFT to Freelancer (Platform pays and signs)
+        const transferTx = await new TransferTransaction()
+            .addNftTransfer(tier.tokenId, serialNumber, myAccountId, accountId)
+            .freezeWith(platformClient)
+            .sign(PrivateKey.fromStringECDSA(myPrivateKey));
+
+        await (await transferTx.execute(platformClient)).getReceipt(platformClient);
+        console.log(`- Transferred NFT ${tier.tokenId}#${serialNumber} to ${accountId}`);
+
+        // 5. Update local records
+        if (!rewardsDB[accountId]) rewardsDB[accountId] = [];
+        rewardsDB[accountId].push(rewardId);
+        saveDB(REWARDS_DB_FILE, rewardsDB);
+
+        res.status(200).json({
+            message: `Successfully claimed ${tier.name}!`,
+            tokenId: tier.tokenId,
+            serialNumber,
+        });
+
+    } catch (error) {
+        console.error("Error claiming reward:", error);
+        res.status(500).json({ message: "Error claiming reward", error: error.toString() });
     }
 });
 

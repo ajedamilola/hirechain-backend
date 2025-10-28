@@ -1,0 +1,11 @@
+{
+  "watch": [
+    "**/*.js"
+  ],
+  "ignore": [
+    "profiles.json",
+    "gigs.json",
+    "messages.json"
+  ],
+  "ext": "js"
+}

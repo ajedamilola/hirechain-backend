@@ -12,7 +12,7 @@ import {
 import express from "express";
 import * as dotenv from "dotenv";
 import axios from "axios";
-import { v4 as uuidv4 } from 'uuid'; // For generating unique gig IDs
+import { v4 as uuidv4 } from 'uuid';
 import fs from "fs";
 import solc from "solc";
 
@@ -25,7 +25,7 @@ const myAccountId = process.env.TREASURY_ACCOUNT_ID;
 const myPrivateKey = process.env.TREASURY_PRIVATE_KEY;
 const profileTopicId = process.env.HIRECHAIN_PROFILE_TOPIC_ID;
 const gigsTopicId = process.env.HIRECHAIN_GIGS_TOPIC_ID;
-const messagesTopicId = process.env.HIRECHAIN_MESSAGES_TOPIC_ID; // NEW: Messages Topic ID
+const messagesTopicId = process.env.HIRECHAIN_MESSAGES_TOPIC_ID;
 
 if (!myAccountId || !myPrivateKey || !profileTopicId || !gigsTopicId || !messagesTopicId) {
     throw new Error("All required environment variables must be present");
@@ -46,6 +46,14 @@ const PROFILE_DB_FILE = "profiles.json";
 const GIGS_DB_FILE = "gigs.json";
 const MESSAGES_DB_FILE = "messages.json";
 
+// --- Persistent "Database" (Initialized to be populated later) ---
+let gigsDB = {};
+let profilesDB = {};
+let messagesDB = {};
+
+// --- Helper for fetching from Mirror Node ---
+const MIRROR_NODE_URL = `https://testnet.mirrornode.hedera.com/api/v1`;
+
 // --- File Storage Utility Functions (Synchronous for API simplicity) ---
 
 /**
@@ -61,7 +69,6 @@ const loadDB = (filename) => {
         }
     } catch (error) {
         console.error(`Error loading ${filename}:`, error);
-        // If file exists but is corrupt, we return an empty object to prevent server crash
     }
     return {};
 };
@@ -80,17 +87,124 @@ const saveDB = (filename, data) => {
 };
 
 
-// --- Persistent "Database" (Loaded from JSON files) ---
-let gigsDB = loadDB(GIGS_DB_FILE);         // Stores gigRefId -> { gigData, hcsSequenceNumber, ... }
-let profilesDB = loadDB(PROFILE_DB_FILE);   // Stores accountId -> { profileData }
-let messagesDB = loadDB(MESSAGES_DB_FILE);  // Stores gigRefId -> [message objects]
+// --- **NEW** HCS Synchronization Function ---
 
-console.log(`Loaded ${Object.keys(profilesDB).length} profiles, ${Object.keys(gigsDB).length} gigs, and ${Object.keys(messagesDB).length} message logs.`);
+/**
+ * Fetches all historical messages from a Hedera Consensus Service topic via the Mirror Node
+ * and processes them to build or update the local state.
+ * @param {string} topicId The ID of the HCS topic.
+ * @param {function} processor The function to handle each decoded message payload.
+ * @returns {Promise<number>} The number of messages processed.
+ */
+const fetchAndProcessTopicMessages = async (topicId, processor) => {
+    let nextUrl = `${MIRROR_NODE_URL}/topics/${topicId}/messages?limit=100`;
+    let processedCount = 0;
 
-// --- Helper for fetching from Mirror Node ---
-const MIRROR_NODE_URL = `https://testnet.mirrornode.hedera.com/api/v1`;
+    // Use a while loop to handle pagination (if more than 100 messages exist)
+    while (nextUrl) {
+        try {
+            const response = await axios.get(nextUrl);
+            const messages = response.data.messages;
+
+            for (const msg of messages) {
+                const messageString = Buffer.from(msg.message, "base64").toString("utf-8");
+                try {
+                    const messageJson = JSON.parse(messageString);
+                    processor(messageJson, msg);
+                    processedCount++;
+                } catch (e) {
+                    console.error(`Failed to parse HCS message for topic ${topicId}:`, e);
+                }
+            }
+
+            // Check for next page
+            nextUrl = response.data.links?.next ? `${MIRROR_NODE_URL}${response.data.links.next}` : null;
+        } catch (error) {
+            console.error(`Error fetching messages for topic ${topicId}:`, error.message);
+            break; // Stop on error
+        }
+    }
+    return processedCount;
+};
+
+/**
+ * Synchronizes local JSON databases with the latest state from the HCS Mirror Node.
+ */
+const syncFromMirrorNode = async () => {
+    console.log("--- Starting HCS Synchronization ---");
+
+    // 1. Gigs Synchronization (Creates and Updates)
+    const newGigsDB = {};
+    const gigsProcessor = (message) => {
+        if (message.type === "GIG_CREATE") {
+            // Initialize the gig state
+            newGigsDB[message.gigRefId] = {
+                ...message,
+                status: "OPEN",
+                escrowContractId: null,
+                assignedFreelancerId: null,
+            };
+        } else if (message.type === "GIG_UPDATE" && newGigsDB[message.gigRefId]) {
+            // Apply updates to the existing gig state
+            newGigsDB[message.gigRefId] = {
+                ...newGigsDB[message.gigRefId],
+                ...message, // Overwrite properties like status, assignedFreelancerId, escrowContractId
+            };
+        }
+    };
+    const gigsCount = await fetchAndProcessTopicMessages(gigsTopicId, gigsProcessor);
+    gigsDB = newGigsDB; // Replace local DB with fully reconstructed HCS state
+    saveDB(GIGS_DB_FILE, gigsDB);
+    console.log(`[GIGS] Synced ${gigsCount} HCS messages. ${Object.keys(gigsDB).length} unique gigs loaded.`);
 
 
+    // 2. Profiles Synchronization (Always a "CREATE" for this use case)
+    const newProfilesDB = {};
+    const profilesProcessor = (message) => {
+        if (message.type === "PROFILE_CREATE") {
+            newProfilesDB[message.userAccountId] = message;
+        }
+    };
+    const profilesCount = await fetchAndProcessTopicMessages(profileTopicId, profilesProcessor);
+    profilesDB = newProfilesDB;
+    saveDB(PROFILE_DB_FILE, profilesDB);
+    console.log(`[PROFILES] Synced ${profilesCount} HCS messages. ${Object.keys(profilesDB).length} unique profiles loaded.`);
+
+
+    // 3. Messages Synchronization (Append only)
+    const newMessagesDB = {}; // { gigRefId: [message, message, ...] }
+    const messagesProcessor = (message) => {
+        if (message.type === "GIG_MESSAGE" && message.gigRefId) {
+            if (!newMessagesDB[message.gigRefId]) {
+                newMessagesDB[message.gigRefId] = [];
+            }
+            newMessagesDB[message.gigRefId].push(message);
+        }
+    };
+    const messagesCount = await fetchAndProcessTopicMessages(messagesTopicId, messagesProcessor);
+    // Note: Messages are currently sorted by Mirror Node's internal timestamp, which is close to sequence order.
+    messagesDB = newMessagesDB;
+    saveDB(MESSAGES_DB_FILE, messagesDB);
+    console.log(`[MESSAGES] Synced ${messagesCount} HCS messages across ${Object.keys(messagesDB).length} gigs.`);
+
+    console.log("--- HCS Synchronization Complete ---");
+};
+
+// --- Execution Block (Before starting server) ---
+
+const startServer = async () => {
+    // 1. Sync all data from HCS Mirror Node to local JSON files
+    await syncFromMirrorNode();
+
+    // 2. Start Express server with the fully populated and up-to-date data
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => {
+        console.log(`HireChain backend listening on port ${port}`);
+    });
+};
+
+// Start the synchronization and then the server
+startServer();
 // --- 2. USER MANAGEMENT ---
 app.post("/register", async (req, res) => {
     try {
@@ -494,12 +608,4 @@ app.post("/arbiter/cancel", async (req, res) => {
         console.error("Arbiter error cancelling escrow:", error);
         res.status(500).json({ message: "Arbiter error cancelling escrow", error: error.toString() });
     }
-});
-
-
-
-// --- 7. START THE SERVER ---
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`HireChain backend listening on port ${port}`);
 });

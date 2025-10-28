@@ -17,6 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from "fs";
 import solc from "solc";
 import { createNftCollection } from './nft-creator.js'; // <-- NEW IMPORT
+import { sendEmail } from "./email_system/email_config.js";
 
 // --- 1. INITIAL SETUP & CONFIGURATION ---
 dotenv.config();
@@ -285,8 +286,8 @@ startServer();
 // --- 2. USER MANAGEMENT ---
 app.post("/register", async (req, res) => {
     try {
-        const { name, skills, portfolioUrl } = req.body;
-        if (!name || !skills) return res.status(400).json({ message: "Name and skills are required." });
+        const { name, skills, portfolioUrl, email } = req.body;
+        if (!name || !skills || !email) return res.status(400).json({ message: "Name, skills and email are required." });
 
         // Step 1: Create the Hedera Account (paid by the platform)
         const newAccountPrivateKey = PrivateKey.generateED25519();
@@ -297,7 +298,7 @@ app.post("/register", async (req, res) => {
         console.log("Got here")
 
         // Step 2: Create the On-Chain Profile (paid by the new user's account)
-        const profileData = { type: "PROFILE_CREATE", userAccountId: newAccountId.toString(), name, skills, portfolioUrl };
+        const profileData = { type: "PROFILE_CREATE", userAccountId: newAccountId.toString(), name, skills, portfolioUrl, email };
         const profileTx = new TopicMessageSubmitTransaction({ topicId: profileTopicId, message: JSON.stringify(profileData) });
 
         const userClient = Client.forTestnet();
@@ -363,11 +364,11 @@ app.get("/users/profile/:accountId", async (req, res) => {
 // --- 3. GIG MANAGEMENT ---
 app.post("/gigs", async (req, res) => {
     try {
-        const { clientId, clientPrivateKey, title, description, budget } = req.body;
+        const { clientId, clientPrivateKey, title, description, budget, duration } = req.body;
         if (!clientId || !clientPrivateKey || !title || !description || !budget) return res.status(400).json({ message: "Missing required gig fields." });
 
         const gigRefId = uuidv4(); // Generate a unique ID for this gig
-        const gigData = { type: "GIG_CREATE", gigRefId, clientId, title, description, budget: `${budget} HBAR`, status: "OPEN" };
+        const gigData = { type: "GIG_CREATE", gigRefId, clientId, title, description, duration, budget: `${budget} HBAR`, status: "OPEN" };
         const transaction = new TopicMessageSubmitTransaction({ topicId: gigsTopicId, message: JSON.stringify(gigData) });
 
         const userClient = Client.forTestnet().setOperator(clientId, clientPrivateKey);
@@ -438,6 +439,22 @@ app.post("/gigs/:gigRefId/assign", async (req, res) => {
         gigsDB[gigRefId].assignedFreelancerId = freelancerAccountId;
         gigsDB[gigRefId].escrowContractId = newContractId.toString();
         saveDB(GIGS_DB_FILE, gigsDB); // <-- **PERSISTENCE SAVE**
+
+
+        const freelancer = profilesDB[freelancerAccountId];
+        const gig = gigsDB[gigRefId]
+
+        await sendEmail({to: freelancer.email, subject: "Congratulations, you've earned it", template: "newGig.ejs", data: {
+                name: freelancer.name,
+                gigTitle: gig.title,
+                duration: gig.duration,
+                description: gig.description,
+                budget: gig.budget,
+                // clientId: clientId,
+                gigRefId: gigRefId,
+                actionUrl: `https://frontendurl/gigs/${gigRefId}` 
+            }
+        });
 
         res.status(200).json({
             message: "Freelancer assigned and escrow created successfully.",
@@ -555,6 +572,8 @@ app.post("/gigs/:gigRefId/release-escrow", async (req, res) => {
             saveDB(XP_DB_FILE, xpDB);
             console.log(`Awarded ${xpToAward} XP to freelancer ${freelancerId}. New total: ${xpDB[freelancerId]}`);
         }
+
+        await sendEmail({to: profilesDB[freelancerId].email, subject: "Balling Mode Activated", template: "escrowReleased.ejs", data: {name: profilesDB[freelancerId].name, gigTitle: gig.title, gigRefId: gigRefId, amount: gig.budget, viewPaymentUrl: `https://frontendurl/payments/${gigRefId}`}, withdrawUrl: `http://frontendurl/profile/profile` });
 
         res.status(200).json({ message: `Successfully released funds for gig ${gigRefId}.` });
     } catch (error) {

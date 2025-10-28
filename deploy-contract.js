@@ -7,15 +7,19 @@ import {
   Hbar,
   ContractByteCodeQuery
 } from "@hashgraph/sdk";
-import * as dotenv from "dotenv";
+// import * as dotenv from "dotenv";
+import "dotenv/config"
 import fs from "fs";
 import solc from "solc";
 
-dotenv.config();
+// dotenv.config();
 
 async function main() {
   const myAccountId = process.env.TREASURY_ACCOUNT_ID;
   const myPrivateKey = process.env.TREASURY_PRIVATE_KEY;
+
+  console.log(myAccountId)
+  console.log(myPrivateKey)
 
   if (!myAccountId || !myPrivateKey) {
     throw new Error("TREASURY_ACCOUNT_ID and TREASURY_PRIVATE_KEY must be in .env");

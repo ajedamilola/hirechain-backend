@@ -319,6 +319,13 @@ app.post("/register", async (req, res) => {
         res.status(500).json({ message: "Registration failed", error: error.toString() });
     }
 });
+app.post("/test-partial", async (req, res) => {
+    const profileTx = new TopicMessageSubmitTransaction({ topicId: "0.0.7149954", message: "This is a fucking test" });
+    const userClient = Client.forTestnet();
+    const frozenTransaction = profileTx.freezeWith(userClient)
+    const encodedTransaction = Buffer.from(frozenTransaction.toBytes()).toString("base64");
+    res.send(encodedTransaction)
+})
 
 // Get user profile (NEW)
 app.get("/users/profile/:accountId", async (req, res) => {

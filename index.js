@@ -8,7 +8,8 @@ import {
     ContractExecuteTransaction,
     ContractFunctionParameters,
     ContractCreateFlow,
-    TokenAssociateTransaction, TokenMintTransaction, TransferTransaction
+    TokenAssociateTransaction, TokenMintTransaction, TransferTransaction,
+    TransactionId
 } from "@hashgraph/sdk";
 import express from "express";
 import * as dotenv from "dotenv";
@@ -320,11 +321,19 @@ app.post("/register", async (req, res) => {
         res.status(500).json({ message: "Registration failed", error: error.toString() });
     }
 });
-app.post("/test-partial", async (req, res) => {
-    const profileTx = new TopicMessageSubmitTransaction({ topicId: "0.0.7149954", message: "This is a fucking test" });
-    const userClient = Client.forTestnet();
-    const frozenTransaction = profileTx.freezeWith(userClient)
-    const encodedTransaction = Buffer.from(frozenTransaction.toBytes()).toString("base64");
+
+app.get("/test-partial", async (req, res) => {
+    const clientAccountId = AccountId.fromString("0.0.7140651");
+    const recipientAccountId = AccountId.fromString("0.0.6245213");
+    const client = Client.forTestnet();
+    // Build the transaction
+    const transaction = new TransferTransaction()
+        .addHbarTransfer(clientAccountId, new Hbar(-10)) // Client pays 10 Hbar
+        .addHbarTransfer(recipientAccountId, new Hbar(10))
+        .setTransactionId(TransactionId.generate(clientAccountId))
+        .freezeWith(client);
+    // Encode the frozen transaction into a Base64 string to send to the frontend
+    const encodedTransaction = Buffer.from(transaction.toBytes()).toString("base64");
     res.send(encodedTransaction)
 })
 
@@ -451,7 +460,8 @@ app.post("/gigs/:gigRefId/assign", async (req, res) => {
         const freelancer = profilesDB[freelancerAccountId];
         const gig = gigsDB[gigRefId]
 
-        await sendEmail({to: freelancer.email, subject: "Congratulations, you've earned it", template: "newGig.ejs", data: {
+        await sendEmail({
+            to: freelancer.email, subject: "Congratulations, you've earned it", template: "newGig.ejs", data: {
                 name: freelancer.name,
                 gigTitle: gig.title,
                 duration: gig.duration,
@@ -459,7 +469,7 @@ app.post("/gigs/:gigRefId/assign", async (req, res) => {
                 budget: gig.budget,
                 // clientId: clientId,
                 gigRefId: gigRefId,
-                actionUrl: `https://frontendurl/gigs/${gigRefId}` 
+                actionUrl: `https://frontendurl/gigs/${gigRefId}`
             }
         });
 
@@ -580,7 +590,7 @@ app.post("/gigs/:gigRefId/release-escrow", async (req, res) => {
             console.log(`Awarded ${xpToAward} XP to freelancer ${freelancerId}. New total: ${xpDB[freelancerId]}`);
         }
 
-        await sendEmail({to: profilesDB[freelancerId].email, subject: "Balling Mode Activated", template: "escrowReleased.ejs", data: {name: profilesDB[freelancerId].name, gigTitle: gig.title, gigRefId: gigRefId, amount: gig.budget, viewPaymentUrl: `https://frontendurl/payments/${gigRefId}`}, withdrawUrl: `http://frontendurl/profile/profile` });
+        await sendEmail({ to: profilesDB[freelancerId].email, subject: "Balling Mode Activated", template: "escrowReleased.ejs", data: { name: profilesDB[freelancerId].name, gigTitle: gig.title, gigRefId: gigRefId, amount: gig.budget, viewPaymentUrl: `https://frontendurl/payments/${gigRefId}` }, withdrawUrl: `http://frontendurl/profile/profile` });
 
         res.status(200).json({ message: `Successfully released funds for gig ${gigRefId}.` });
     } catch (error) {

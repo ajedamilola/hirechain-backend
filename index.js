@@ -23,6 +23,7 @@ import fs from "fs";
 import solc from "solc";
 import { createNftCollection } from './nft-creator.js';
 import { sendEmail } from "./email_system/email_config.js";
+import path from "path";
 
 // --- 1. INITIAL SETUP & CONFIGURATION ---
 dotenv.config();
@@ -44,7 +45,7 @@ const platformClient = Client.forTestnet();
 platformClient.setOperator(AccountId.fromString(myAccountId), PrivateKey.fromStringECDSA(myPrivateKey));
 
 // Compile the escrow smart contract
-const contractSource = fs.readFileSync("Escrow.sol", "utf8");
+const contractSource = fs.readFileSync(path.join(".", "Escrow.sol"), "utf8");
 const input = { language: "Solidity", sources: { "Escrow.sol": { content: contractSource } }, settings: { outputSelection: { "*": { "*": ["*"] } } } };
 const output = JSON.parse(solc.compile(JSON.stringify(input)));
 const bytecode = output.contracts["Escrow.sol"]["HireChainEscrow"].evm.bytecode.object;

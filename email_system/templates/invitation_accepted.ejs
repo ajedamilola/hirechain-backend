@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #10B981; color: white; padding: 20px; text-align: center; }
+        .content { background: #f9fafb; padding: 30px; }
+        .button { display: inline-block; padding: 12px 24px; background: #10B981; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; }
+        .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+        .success-box { background: #D1FAE5; border: 2px solid #10B981; padding: 15px; border-radius: 6px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>✅ Invitation Accepted!</h1>
+        </div>
+        <div class="content">
+            <p>Hi <%= clientName %>,</p>
+            
+            <div class="success-box">
+                <h3 style="margin-top: 0; color: #059669;">Great News!</h3>
+                <p style="margin-bottom: 0;"><strong><%= freelancerName %></strong> has accepted your invitation for "<strong><%= gigTitle %></strong>"!</p>
+            </div>
+            
+            <p>You can now proceed with the gig assignment and escrow setup.</p>
+            
+            <h4>Next Steps:</h4>
+            <ol>
+                <li>Go to your gig dashboard</li>
+                <li>Assign the gig to <%= freelancerName %></li>
+                <li>Lock funds in escrow</li>
+                <li>The freelancer can then start working</li>
+            </ol>
+            
+            <a href="<%= actionUrl %>" class="button">Assign Gig Now</a>
+            
+            <p style="color: #666; font-size: 14px;">
+                <strong>Reminder:</strong> Make sure to lock the agreed amount in escrow before the freelancer starts working. This protects both parties.
+            </p>
+        </div>
+        <div class="footer">
+            <p>© 2025 HireChain - Decentralized Freelancing on Hedera</p>
+            <p>This is an automated notification. Please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>

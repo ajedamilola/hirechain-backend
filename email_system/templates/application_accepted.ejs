@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #10B981; color: white; padding: 20px; text-align: center; }
+        .content { background: #f9fafb; padding: 30px; }
+        .button { display: inline-block; padding: 12px 24px; background: #10B981; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; }
+        .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+        .success-box { background: #D1FAE5; border: 2px solid #10B981; padding: 15px; border-radius: 6px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎊 Application Accepted!</h1>
+        </div>
+        <div class="content">
+            <p>Hi <%= freelancerName %>,</p>
+            
+            <div class="success-box">
+                <h3 style="margin-top: 0; color: #059669;">Congratulations!</h3>
+                <p style="margin-bottom: 0;">Your application for "<strong><%= gigTitle %></strong>" has been accepted!</p>
+            </div>
+            
+            <p>The client will now proceed with the gig assignment and escrow setup. You'll receive another notification once the contract is ready.</p>
+            
+            <h4>Next Steps:</h4>
+            <ol>
+                <li>Wait for the client to set up the escrow contract</li>
+                <li>Once funds are locked, you can start working</li>
+                <li>Communicate with the client through the platform</li>
+                <li>Submit your work when complete</li>
+            </ol>
+            
+            <a href="<%= actionUrl %>" class="button">View Gig Details</a>
+            
+            <p style="color: #666; font-size: 14px;">
+                <strong>Pro Tip:</strong> Maintain clear communication with the client throughout the project to ensure success!
+            </p>
+        </div>
+        <div class="footer">
+            <p>© 2025 HireChain - Decentralized Freelancing on Hedera</p>
+            <p>This is an automated notification. Please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -19,24 +19,22 @@ export const connectDB = async () => {
 
     try {
         await mongoose.connect(MONGODB_URI, {
-            maxPoolSize: 10,
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000,
+            dbName: 'hirechain'
         });
-        
+
         isConnected = true;
         console.log('✓ MongoDB connected successfully');
-        
+
         mongoose.connection.on('error', (err) => {
             console.error('MongoDB connection error:', err);
             isConnected = false;
         });
-        
+
         mongoose.connection.on('disconnected', () => {
             console.warn('MongoDB disconnected');
             isConnected = false;
         });
-        
+
     } catch (error) {
         console.error('MongoDB connection failed:', error);
         throw error;
@@ -51,7 +49,7 @@ export const disconnectDB = async () => {
     if (!isConnected) {
         return;
     }
-    
+
     try {
         await mongoose.connection.close();
         isConnected = false;

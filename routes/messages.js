@@ -29,7 +29,7 @@ router.post('/gigs/:gigRefId/message', async (req, res) => {
     if (!gig) {
       return res.status(404).json({ message: 'Gig not found.' });
     }
-    const newMessage = new Message({ gigRefId, senderId: gig.clientId, content: message, timestamp: new Date() });
+    const newMessage = new Message({ gigRefId, senderId, content: message, timestamp: new Date() });
     await newMessage.save();
 
     const messageCreateTransaction = new TopicMessageSubmitTransaction({

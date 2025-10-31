@@ -59,7 +59,7 @@ router.get('/browse', async (req, res) => {
                 // Get review stats
                 const reviews = await Review.find({ revieweeId: profile.userAccountId });
                 const freelancerReviews = reviews.filter(r => r.reviewType === 'CLIENT_TO_FREELANCER');
-                
+
                 const totalReviews = freelancerReviews.length;
                 const averageRating = totalReviews > 0
                     ? freelancerReviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews
@@ -154,7 +154,7 @@ router.get('/:userAccountId', async (req, res) => {
         // Get review stats
         const reviews = await Review.find({ revieweeId: userAccountId });
         const freelancerReviews = reviews.filter(r => r.reviewType === 'CLIENT_TO_FREELANCER');
-        
+
         const totalReviews = freelancerReviews.length;
         const averageRating = totalReviews > 0
             ? freelancerReviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews
@@ -174,6 +174,11 @@ router.get('/:userAccountId', async (req, res) => {
         const completedGigs = await Gig.find({
             assignedFreelancerId: userAccountId,
             status: { $in: ['COMPLETED', 'COMPLETED_BY_ARBITER'] }
+        }).select('title budget clientId createdAt');
+
+        const activeGigs = await Gig.find({
+            assignedFreelancerId: userAccountId,
+            status: "IN_PROGRESS"
         }).select('title budget clientId createdAt');
 
         // Get recent reviews with reviewer details
@@ -196,7 +201,9 @@ router.get('/:userAccountId', async (req, res) => {
                 totalReviews,
                 ratingDistribution,
                 xpPoints,
-                completedGigsCount: completedGigs.length
+                activeGigsCount: activeGigs.length,
+                completedGigsCount: completedGigs.length,
+                totalEarned: completedGigs.reduce((sum, gig) => sum + Number(gig.budget.split("HBAR")[0]), 0)
             },
             completedGigs,
             recentReviews
@@ -266,7 +273,7 @@ router.get('/top/rated', async (req, res) => {
         // Enrich with ratings
         const profilesWithRatings = await Promise.all(
             profiles.map(async (profile) => {
-                const reviews = await Review.find({ 
+                const reviews = await Review.find({
                     revieweeId: profile.userAccountId,
                     reviewType: 'CLIENT_TO_FREELANCER'
                 });

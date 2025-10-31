@@ -32,12 +32,12 @@ router.post('/users/create-account', async (req, res) => {
 
 router.post('/users/prepare-profile-creation', async (req, res) => {
   try {
-    const { accountId, name, skills, portfolioUrl, email } = req.body;
-    if (!accountId || !name || !skills || !email) {
+    const { accountId, name, skills, portfolioUrl, email, profileType } = req.body;
+    if (!accountId || !name || !skills || !email || !profileType) {
       return res.status(400).json({ message: 'All profile fields are required.' });
     }
 
-    const profileData = { type: 'PROFILE_CREATE', userAccountId: accountId, name, skills, portfolioUrl, email };
+    const profileData = { type: 'PROFILE_CREATE', userAccountId: accountId, name, skills, portfolioUrl, email, profileType };
     const transaction = new TopicMessageSubmitTransaction({
       topicId: profileTopicId,
       message: JSON.stringify(profileData),

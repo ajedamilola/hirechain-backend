@@ -26,6 +26,11 @@ const profileSchema = new mongoose.Schema({
     email: {
         type: String,
         required: true
+    },
+    profileType: {
+        type: String,
+        default: 'freelancer',
+        index: true
     }
 }, {
     timestamps: true

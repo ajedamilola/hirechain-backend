@@ -1,7 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { Client, TopicMessageSubmitTransaction, TransactionId, ContractExecuteTransaction, ContractCreateTransaction, FileCreateTransaction, FileAppendTransaction, ContractId, Hbar, PrivateKey } from '@hashgraph/sdk';
-import { Gig, Profile, XP } from '../db/models.js';
+import { Gig, Invitation, Profile, XP } from '../db/models.js';
 import { gigsTopicId } from '../utils/env.js';
 import { platformClient, myPrivateKey } from '../utils/hederaClient.js';
 import { escrowBytecode } from '../utils/solidityCompiler.js';
@@ -184,7 +184,16 @@ router.post('/gigs/:gigRefId/record-release-escrow', async (req, res) => {
 // Public marketplace
 router.get('/gigs', async (req, res) => {
   try {
-    const openGigs = await Gig.find({ status: 'OPEN', visibility: 'PUBLIC' }).sort({ createdAt: -1 });
+    const { accountId } = req.query
+    const allOpenGigs = await Gig.find({ status: 'OPEN', visibility: 'PUBLIC' }).sort({ createdAt: -1 });
+    const openGigs = await Promise.all(allOpenGigs.map(async (gig) => {
+      const invitation = await Invitation.findOne({ gigRefId: gig.gigRefId, freelancerId: accountId });
+      let invitationStatus = "NOT_INVITED"
+      if (invitation) {
+        invitationStatus = invitation.status
+      }
+      return { ...gig.toObject(), invitationStatus }
+    }))
     res.status(200).json(openGigs);
   } catch (error) {
     res.status(500).json({ message: 'Error listing open gigs', error: error.toString() });

@@ -105,6 +105,23 @@ router.post('/gigs/:gigRefId/prepare-assignment', async (req, res) => {
   }
 });
 
+router.post('/gigs/:gigRefId/record-assignment', async (req, res) => {
+  try {
+    const { gigRefId } = req.params;
+    const { clientId, freelancerAccountId, updateGigData } = req.body;
+    const gig = await Gig.findOne({ gigRefId });
+    if (!gig) {
+      return res.status(404).json({ message: 'Gig not found.' });
+    }
+    console.log({ status: 'IN_PROGRESS', assignedFreelancerId: freelancerAccountId })
+    await Gig.findOneAndUpdate({ gigRefId }, { status: 'IN_PROGRESS', assignedFreelancerId: freelancerAccountId });
+    res.status(200).json({ message: 'Assignment recorded successfully.' });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: 'Error recording assignment', error: error.toString() });
+  }
+})
+
 // Prepare lock escrow
 router.post('/gigs/:gigRefId/prepare-lock-escrow', async (req, res) => {
   try {
@@ -227,7 +244,12 @@ router.get('/gigs/:gigRefId', async (req, res) => {
     const gig = await Gig.findOne({ gigRefId });
     const client = await Profile.findOne({ userAccountId: gig.clientId });
     const freelancer = await Profile.findOne({ userAccountId: gig.assignedFreelancerId });
-    if (gig) return res.status(200).json({ ...gig.toObject(), client, freelancer });
+    const invitation = await Invitation.findOne({ gigRefId: gig.gigRefId, freelancerId: gig.assignedFreelancerId });
+    let invitationStatus = "NOT_INVITED"
+    if (invitation) {
+      invitationStatus = invitation.status
+    }
+    if (gig) return res.status(200).json({ ...gig.toObject(), client, freelancer, invitationStatus });
     res.status(404).json({ message: 'Gig not found.' });
   } catch (error) {
     console.log(error)

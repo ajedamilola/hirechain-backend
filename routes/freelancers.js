@@ -32,7 +32,9 @@ router.get('/browse', async (req, res) => {
         } = req.query;
 
         // Build query
-        let query = {};
+        let query = {
+            profileType: "freelancer"
+        };
 
         // Search by name or skills
         if (search) {

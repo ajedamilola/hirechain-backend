@@ -76,7 +76,7 @@ const gigSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['OPEN', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'COMPLETED_BY_ARBITER', 'CANCELLED_BY_ARBITER'],
+        enum: ['OPEN', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'COMPLETED_BY_ARBITER', 'CANCELLED_BY_ARBITER', 'FINALIZED'],
         default: 'OPEN',
         index: true
     },

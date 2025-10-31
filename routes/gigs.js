@@ -225,9 +225,12 @@ router.get('/gigs/:gigRefId', async (req, res) => {
   try {
     const { gigRefId } = req.params;
     const gig = await Gig.findOne({ gigRefId });
-    if (gig) return res.status(200).json(gig);
+    const client = await Profile.findOne({ userAccountId: gig.clientId });
+    const freelancer = await Profile.findOne({ userAccountId: gig.assignedFreelancerId });
+    if (gig) return res.status(200).json({ ...gig.toObject(), client, freelancer });
     res.status(404).json({ message: 'Gig not found.' });
   } catch (error) {
+    console.log(error)
     res.status(500).json({ message: 'Error fetching gig', error: error.toString() });
   }
 });

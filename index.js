@@ -25,7 +25,7 @@ import { createNftCollection } from './nft-creator.js';
 import { sendEmail } from "./email_system/email_config.js";
 import path from "path";
 import { connectDB } from './db/connection.js';
-import { Profile, Gig, Message, XP, Reward, Application, Invitation, Review } from './db/models.js';
+import { Profile, Gig, Message, XP, Reward, Application, Invitation, Review, Project } from './db/models.js';
 import applicationsRouter from './routes/applications.js';
 import invitationsRouter from './routes/invitations.js';
 import reviewsRouter from './routes/reviews.js';
@@ -35,6 +35,7 @@ import messagesRouter from './routes/messages.js';
 import freelancersRouter from './routes/freelancers.js';
 import rewardsRouter from './routes/rewards.js';
 import arbiterRouter from './routes/arbiter.js';
+import aiRouter from './routes/ai.routes.js';
 import { syncFromMirrorNode as runHcsSync } from './services/hcsSync.service.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -44,6 +45,14 @@ const app = express();
 app.use(express.json());
 
 // Mount route modules
+// API Routes
+app.use('/api/applications', applicationsRouter);
+app.use('/api/invitations', invitationsRouter);
+app.use('/api/reviews', reviewsRouter);
+app.use('/api/freelancers', freelancersRouter);
+app.use('/api/ai', aiRouter);
+
+// Mount other routes
 app.use('/applications', applicationsRouter);
 app.use('/invitations', invitationsRouter);
 app.use('/reviews', reviewsRouter);

@@ -89,7 +89,11 @@ const gigSchema = new mongoose.Schema({
         default: null,
         index: true
     },
-    hcsSequenceNumber: Number
+    hcsSequenceNumber: Number,
+    skillsRequired: {
+        type: [String],
+        default: []
+    }
 }, {
     timestamps: true
 });
@@ -288,6 +292,73 @@ reviewSchema.index({ gigRefId: 1, reviewerId: 1 }, { unique: true });
 // ===========================
 // Export Models
 // ===========================
+// ===========================
+// Project Schema
+// ===========================
+const projectSchema = new mongoose.Schema({
+    title: {
+        type: String,
+        required: true
+    },
+    description: {
+        type: String,
+        required: true
+    },
+    budget: {
+        type: Number,
+        required: true
+    },
+    skills: [{
+        type: String,
+        required: true
+    }],
+    hirerAccountId: {
+      type: String,
+      required: true,
+      index: true
+    },
+    status: {
+        type: String,
+        enum: ['draft', 'published', 'in_progress', 'completed', 'cancelled'],
+        default: 'draft',
+        index: true
+    },
+    freelancer: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Profile',
+        default: null
+    },
+    duration: {
+        type: Number, // in days
+        required: true
+    },
+    visibility: {
+        type: String,
+        enum: ['public', 'private'],
+        default: 'public',
+        index: true
+    },
+    attachments: [{
+        url: String,
+        name: String,
+        type: String
+    }],
+    // Link to Hedera entities if needed
+    hederaTopicId: String,
+    escrowContractId: String
+}, {
+    timestamps: true
+});
+
+// Indexes for efficient querying
+projectSchema.index({ hirerAccountId: 1, status: 1 });
+projectSchema.index({ freelancer: 1, status: 1 });
+projectSchema.index({ skills: 1, status: 1 });
+projectSchema.index({ title: 'text', description: 'text' });
+
+// ===========================
+// Export Models
+// ===========================
 export const Profile = mongoose.model('Profile', profileSchema);
 export const Gig = mongoose.model('Gig', gigSchema);
 export const Message = mongoose.model('Message', messageSchema);
@@ -296,3 +367,4 @@ export const Reward = mongoose.model('Reward', rewardSchema);
 export const Application = mongoose.model('Application', applicationSchema);
 export const Invitation = mongoose.model('Invitation', invitationSchema);
 export const Review = mongoose.model('Review', reviewSchema);
+export const Project = mongoose.model('Project', projectSchema);
